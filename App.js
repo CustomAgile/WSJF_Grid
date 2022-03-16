@@ -1,0 +1,259 @@
+var Ext = window.Ext4 || window.Ext;
+/* global _*/
+/* global Rally */
+Ext.define('CustomApp', {
+    extend: 'Rally.app.App',
+    componentCls: 'app',
+    launch: function() {
+        var that = this;
+
+        //console.log(that.getSettings());
+        that.TimeCriticalityField = that.getSetting('TimeCriticalityField');
+        that.RROEValueField = that.getSetting('RROEValueField');
+        that.UserBusinessValueField = that.getSetting('UserBusinessValueField');
+        that.WSJFScoreField = that.getSetting('WSJFScoreField');
+        that.JobSizeField = that.getSetting('JobSizeField');
+        that.ShowValuesAfterDecimal = that.getSettingsFields('ShowValuesAfterDecimal');
+        
+        this._grid = null;
+        this._piCombobox = this.add({
+            xtype: "rallyportfolioitemtypecombobox",
+            padding: 5,
+            listeners: {
+                //ready: this._onPICombobox,
+                select: this._onPICombobox,
+                scope: this
+            }
+        });
+    },
+    
+    _onPICombobox: function() {
+        var selectedType = this._piCombobox.getRecord();
+        var model = selectedType.get('TypePath');
+        
+        if (this._grid !== null) {
+            this._grid.destroy();
+        }
+
+        Ext.create('Rally.data.wsapi.TreeStoreBuilder').build({
+            models: [ model ],
+            listeners: {
+                load: function(store) {
+                    var records = store.getRootNode().childNodes;
+                    this._calculateScore(records, true);
+                },
+                update: function(store, rec, modified, opts) {
+                    this._calculateScore([rec], false);
+                },
+                scope: this
+            },
+           // autoLoad: true,
+            enableHierarchy: true
+        }).then({
+            success: this._onStoreBuilt,
+            scope: this
+        });
+    },
+    
+    _onStoreBuilt: function(store, records) {
+        //var records = store.getRootNode().childNodes;
+        var that = this;
+        var selectedType = this._piCombobox.getRecord();
+        var modelNames = selectedType.get('TypePath');
+        
+        var context = this.getContext();
+        this._grid = this.add({
+            xtype: 'rallygridboard',
+            context: context,
+            modelNames: [ modelNames ],
+            toggleState: 'grid',
+            stateful: false,
+            plugins: [
+                {
+                    ptype: 'rallygridboardinlinefiltercontrol',
+                    filterChildren: false,
+                    inlineFilterButtonConfig: {
+                        modelNames: [ modelNames ],
+                        stateful: true,
+                        stateId: context.getScopedStateId('custom-filter-example'),
+                        inlineFilterPanelConfig: {
+                            quickFilterPanelConfig: {
+                                defaultFields: [
+                                    'ArtifactSearch'
+                                ],
+                                addQuickFilterConfig: {
+                                    whiteListFields: ['Milestones', 'Tags']
+                                }
+                            },
+                            advancedFilterPanelConfig: {
+                                advancedFilterRowsConfig: {
+                                    propertyFieldConfig: {
+                                        whiteListFields: ['Milestones', 'Tags']
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    ptype: 'rallygridboardfieldpicker',
+                    headerPosition: 'left',
+                    modelNames: [ modelNames ],
+                    stateful: true,
+                    stateId: context.getScopedStateId('columns-example')
+                },
+                {
+                    ptype: 'rallygridboardactionsmenu',
+                    menuItems: [
+                        {
+                            text: 'Export...',
+                            handler: function() {
+                                window.location = 
+                                    Rally.ui.gridboard.Export.buildCsvExportUrl(this.down('rallygridboard').getGridOrBoard());
+ 
+
+
+                            },
+                            scope: this
+                        }
+                    ],
+                    buttonConfig: {
+                        iconCls: 'icon-export'
+                    }
+                }
+            ],
+            gridConfig: {
+                store: store,
+                columnCfgs: [
+                    'Name',
+                    that.TimeCriticalityField, that.RROEValueField, that.UserBusinessValueField, that.JobSizeField, 
+                    this.getSetting("useExecutiveMandateField")===true ? this.getSetting("ExecutiveMandateField") : null,
+                    {
+                        text: "WSJF Score",
+                        dataIndex: that.WSJFScoreField,
+                        editor: null
+                    }
+                ]
+            },
+            height: this.getHeight()
+        });
+    },
+    
+    _calculateScore: function(records,loading)  {
+        var that = this;
+
+        Ext.Array.each(records, function(feature) {
+            var execMandate = that.getSetting("useExecutiveMandateField")===true ? feature.data[that.getSetting("ExecutiveMandateField")] : 1;
+            execMandate = _.isUndefined(execMandate) || _.isNull(execMandate) || execMandate === 0 ? 1 : execMandate;
+            
+            var jobSize   = feature.data[that.JobSizeField];
+            jobSize = _.isUndefined(jobSize) || _.isNull(jobSize) ? 0 : jobSize;
+            
+            var timeValue = feature.data[that.TimeCriticalityField];
+            timeValue = _.isUndefined(timeValue) || _.isNull(timeValue) ? 0 : timeValue;
+            
+            var OERR      = feature.data[that.RROEValueField];
+            OERR = _.isUndefined(OERR) || _.isNull(OERR) ? 0 : OERR;
+            
+            var userValue = feature.data[that.UserBusinessValueField];
+            userValue = _.isUndefined(userValue) || _.isNull(userValue) ? 0 : userValue;
+            
+            var oldScore  = feature.data[that.WSJFScoreField];
+            oldScore = _.isUndefined(oldScore) || _.isNull(oldScore) ? 0 : oldScore;
+            
+            var isChecked = that.getSetting("ShowValuesAfterDecimal");
+            //console.log("jobSize: ", jobSize, "execMandate: ", execMandate, 
+            //"timeValue: ", timeValue, "userValue", userValue, "oldScore", oldScore);
+            
+            if (jobSize > 0) { // jobSize is the denominator so make sure it's not 0
+                var score;
+    
+                if( !isChecked ) {
+                    score = ( ((userValue + timeValue + OERR ) * execMandate) / jobSize);
+                    score = Math.round(score);
+                }
+                else {
+                    score = Math.floor(((userValue + timeValue + OERR ) * execMandate / jobSize) * 100)/100;
+                }
+                //console.log(feature.data.Name," Calculated Score ", score, "Old Score: ", oldScore);
+                if (oldScore !== score) { // only update if score changed
+                    feature.set(that.WSJFScoreField, score);
+                    if( loading ) {
+                        // This ensures that if this is the first time this item
+                        // is loaded into the grid, the calculation will be 
+                        // saved in the db.
+                        feature.save();
+                    }
+                }
+            }
+        });
+    },
+    
+    getSettingsFields: function() {
+        var values = [
+            {
+                name: 'ShowValuesAfterDecimal',
+                xtype: 'rallycheckboxfield',
+                label : "Show Values After the Decimal",
+                labelWidth: 200
+            },
+            {
+                name: 'useExecutiveMandateField',
+                xtype: 'rallycheckboxfield',
+                label : "Use Custom Executive Mandate Field",
+                labelWidth: 200
+            },
+            {
+                name: 'ExecutiveMandateField',
+                xtype: 'rallytextfield',
+                label : "Executive Mandate Field",
+                labelWidth: 200
+            },
+            {
+                name: 'TimeCriticalityField',
+                xtype: 'rallytextfield',
+                label : "Time Criticality Field",
+                labelWidth: 200
+            },
+            {
+                name: 'RROEValueField',
+                xtype: 'rallytextfield',
+                label : "RROEValue Field",
+                labelWidth: 200
+            },
+            {
+                name: 'UserBusinessValueField',
+                xtype: 'rallytextfield',
+                label : "User Business Value Field",
+                labelWidth: 200
+            },
+            {
+                name: 'WSJFScoreField',
+                xtype: 'rallytextfield',
+                label : "WSJFScore Field",
+                labelWidth: 200
+            },
+            {
+                name: 'JobSizeField',
+                xtype: 'rallytextfield',
+                label : "Job Size Field",
+                labelWidth: 200
+            }
+        ];
+
+        return values;
+    },
+
+    config: {
+        defaultSettings : {
+            ShowValuesAfterDecimal: false,
+            useExecutiveMandateField : false,
+            ExecutiveMandateField : 'c_ExecutiveMandate',
+            TimeCriticalityField : 'TimeCriticality',
+            RROEValueField : 'RROEValue',
+            UserBusinessValueField : 'UserBusinessValue',
+            WSJFScoreField : 'WSJFScore',
+            JobSizeField : 'JobSize'
+        }
+    }
+});
